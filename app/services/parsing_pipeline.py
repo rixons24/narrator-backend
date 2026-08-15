@@ -7,7 +7,9 @@ from app.services.scene_splitter import split_into_scenes
 from app.services.llm_client import LLMError
 
 
-async def parse_script(raw_text: str, title: str | None = None) -> ParsedScript:
+async def parse_script(
+    raw_text: str, title: str | None = None, detect_sound_effects: bool = False,
+) -> ParsedScript:
     cleaned = clean_script_text_default(raw_text)
     scenes = split_into_scenes(cleaned)
 
@@ -24,12 +26,14 @@ async def parse_script(raw_text: str, title: str | None = None) -> ParsedScript:
     # harmless overhead for Groq)
     first = scenes[0]
     try:
-        parsed_scenes.append(await parse_scene(first))
+        parsed_scenes.append(await parse_scene(first, detect_sound_effects=detect_sound_effects))
     except LLMError as e:
         warnings.append(f"Scene {first.index} ({first.heading or 'untitled'}): {e}")
 
     if len(scenes) > 1:
-        rest_parsed, rest_warnings = await parse_script_scenes(scenes[1:])
+        rest_parsed, rest_warnings = await parse_script_scenes(
+            scenes[1:], detect_sound_effects=detect_sound_effects
+        )
         parsed_scenes.extend(rest_parsed)
         warnings.extend(rest_warnings)
 

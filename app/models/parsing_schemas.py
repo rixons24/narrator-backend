@@ -8,6 +8,11 @@ class DialogueElement(BaseModel):
     type: ElementType
     speaker: str | None = None
     text: str
+    # Populated only when sound-effect detection is requested (see
+    # ParseRequest.detect_sound_effects). A short, clean phrase suitable
+    # for an audio-generation model (e.g. "A deafening roar" rather than
+    # the raw screenplay line), or None if this line isn't a sound cue.
+    sfx_prompt: str | None = None
 
 
 class ParsedScene(BaseModel):
