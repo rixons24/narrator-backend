@@ -10,13 +10,52 @@ professionally formatted screenplay (already cleaned of page numbers and title-p
 credits) and output ONLY a single JSON object describing its structure. No prose, no \
 explanation, no markdown code fences — JSON only.
 
-CRITICAL DISAMBIGUATION RULE — read this first:
+CRITICAL: MERGE LINE-WRAPPED TEXT — read this first.
+Raw screenplay text is extracted with hard line breaks at the original page's text \
+width. A single sentence or paragraph is almost always split across multiple \
+consecutive raw lines purely because of page-width wrapping — this is NOT a \
+paragraph break and NOT a new element. You MUST merge these back into one element.
+
+Example of INCORRECT output (splitting a wrapped sentence into three elements, and \
+worse, changing speaker mid-sentence):
+  Raw input:
+    DANIEL MOLLOY (V.O.)
+    There's stories out there that need to be
+    told. There's shit out there that's, you
+    know...wrong. People need to know about it.
+  WRONG: [
+    {{"type":"dialogue","speaker":"DANIEL MOLLOY","text":"There's stories out there that need to be"}},
+    {{"type":"action","text":"told. There's shit out there that's, you"}},
+    {{"type":"action","text":"know...wrong. People need to know about it."}}
+  ]
+  CORRECT: [
+    {{"type":"dialogue","speaker":"DANIEL MOLLOY","text":"There's stories out there that need to be told. There's shit out there that's, you know...wrong. People need to know about it."}}
+  ]
+This same merging applies to action paragraphs — three consecutive raw lines of \
+scene description are one "action" element, not three.
+
+CRITICAL DISAMBIGUATION RULE — cue vs. emphasis vs. section label:
 Screenwriters frequently write short, ALL-CAPS sentences for dramatic emphasis that are \
-NOT character cues, e.g. "THE ROOM ERUPTS IN GUNFIRE." A real character cue is followed \
-by spoken dialogue in normal sentence case on the next non-blank line. An emphasis \
-sentence is followed by more action description, or another all-caps sentence, or a \
-scene heading. When in doubt: does the next line read like something a person would SAY \
-out loud? If yes, the all-caps line above it was a cue. If not, classify it as "action".
+NOT character cues, e.g. "THE ROOM ERUPTS IN GUNFIRE." Title sequences and montages also \
+often use short ALL-CAPS section/act labels (e.g. "OVERTURE", a card title reveal) that \
+are followed by visual description or a transition instruction — these are NOT character \
+cues either. A real character cue is followed by spoken dialogue in normal sentence case \
+on the next non-blank line — something a person would actually SAY out loud.
+
+Example of INCORRECT output (treating a section label as if it were a speaking character):
+  Raw input:
+    OVERTURE
+    Slow. Maddeningly slow, YAYOI KUSAMA'S AFTERMATH OF
+    OBLITERATION OF ETERNITY surrounds the title card.
+  WRONG: {{"type":"dialogue","speaker":"OVERTURE","text":"Slow. Maddeningly slow..."}}
+  CORRECT: {{"type":"action","text":"OVERTURE. Slow. Maddeningly slow, YAYOI KUSAMA'S AFTERMATH OF OBLITERATION OF ETERNITY surrounds the title card."}}
+Same logic applies to a title-card reveal like "INTERVIEW WITH THE VAMPIRE" followed by \
+"SMASH TO BLACK" — neither is dialogue; both are action/production description.
+
+When in doubt: does the next line read like something a person would SAY out loud? If \
+yes, the all-caps line above it was a cue. If not — if it's description, a transition \
+instruction (CUT TO:, SMASH TO BLACK), or a section/title label — classify both as \
+"action".
 
 CUE NAME MODIFIERS:
 Strip parenthetical modifiers like (V.O.), (O.S.), (CONT'D) to get the canonical speaker \
