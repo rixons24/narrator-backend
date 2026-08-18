@@ -183,30 +183,42 @@ async def parse_scene(scene: Scene, detect_sound_effects: bool = False) -> Parse
 
 
 async def parse_script_scenes(
-    scenes: list[Scene], max_concurrent: int = 2, detect_sound_effects: bool = False,
+    scenes: list[Scene],
+    max_concurrent: int = 2,
+    detect_sound_effects: bool = False,
+    on_progress=None,
 ) -> tuple[list[ParsedScene], list[str]]:
     """max_concurrent=2 (lowered from 4) — Groq's free/on-demand tier has an
     8000 tokens-per-minute cap, and higher concurrency was burning through
     that budget fast on large scripts, triggering rate limits on most
     scenes. Combined with the retry logic in parse_scene, this keeps large
-    scripts parsing reliably rather than dropping scenes that hit 429."""
+    scripts parsing reliably rather than dropping scenes that hit 429.
+
+    on_progress: optional callback(done: int, total: int) invoked after
+    each scene completes (success or failure) — lets a caller (e.g. a
+    background job) report live progress rather than only knowing the
+    final result once everything finishes."""
     semaphore = asyncio.Semaphore(max_concurrent)
     warnings: list[str] = []
+    total = len(scenes)
+    completed = 0
 
     async def parse_with_limit(scene: Scene) -> ParsedScene | None:
+        nonlocal completed
         async with semaphore:
             try:
-                return await parse_scene(scene, detect_sound_effects=detect_sound_effects)
+                result = await parse_scene(scene, detect_sound_effects=detect_sound_effects)
             except LLMError as e:
-                # Keep the warning short and human-readable — the raw
-                # provider error (which can be a large JSON blob) isn't
-                # useful to show a non-technical user in the UI.
                 reason = "rate limit" if isinstance(e, LLMRateLimitError) or "rate limit" in str(e).lower() else "parsing error"
                 warnings.append(
                     f"Scene {scene.index} ({scene.heading or 'untitled'}) couldn't be "
                     f"parsed ({reason}) and was skipped."
                 )
-                return None
+                result = None
+            completed += 1
+            if on_progress:
+                on_progress(completed, total)
+            return result
 
     results = await asyncio.gather(*(parse_with_limit(s) for s in scenes))
     parsed = [r for r in results if r is not None]
