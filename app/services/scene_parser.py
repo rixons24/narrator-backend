@@ -2,7 +2,7 @@
 import asyncio
 
 from app.models.parsing_schemas import DialogueElement, ParsedScene
-from app.services.llm_client import LLMError, LLMTimeoutError, generate_json
+from app.services.llm_client import LLMError, LLMRateLimitError, LLMTimeoutError, generate_json
 from app.services.scene_splitter import Scene
 
 SYSTEM_PROMPT = """You are a screenplay structuring engine. You read one scene of a \
@@ -114,6 +114,15 @@ Output the JSON object for this scene now."""
 
 COLD_START_RETRY_DELAY = 5
 
+# Rate-limit retry bounds: Groq tells us exactly how long to wait (usually
+# a few seconds on the free/on-demand tier), so we trust that number rather
+# than guessing — but cap it so one scene can't stall the whole parse for
+# an unreasonable amount of time, and cap total attempts so a persistently
+# exhausted quota fails cleanly instead of retrying forever.
+MAX_RATE_LIMIT_RETRIES = 4
+MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
+DEFAULT_RATE_LIMIT_WAIT_SECONDS = 8.0  # used if Groq's response didn't include a parseable wait time
+
 
 def _build_system_prompt(detect_sound_effects: bool) -> str:
     schema = BASE_OUTPUT_SCHEMA.format(
@@ -132,11 +141,26 @@ async def parse_scene(scene: Scene, detect_sound_effects: bool = False) -> Parse
     async def _call() -> dict:
         return await generate_json(prompt, system=system_prompt)
 
-    try:
-        data = await _call()
-    except LLMTimeoutError:
-        await asyncio.sleep(COLD_START_RETRY_DELAY)
-        data = await _call()
+    data = None
+    rate_limit_attempts = 0
+
+    while data is None:
+        try:
+            data = await _call()
+        except LLMTimeoutError:
+            await asyncio.sleep(COLD_START_RETRY_DELAY)
+            data = await _call()
+        except LLMRateLimitError as e:
+            rate_limit_attempts += 1
+            if rate_limit_attempts > MAX_RATE_LIMIT_RETRIES:
+                raise LLMError(
+                    f"Groq rate limit persisted after {MAX_RATE_LIMIT_RETRIES} retries — "
+                    f"the account's per-minute token quota is genuinely exhausted right now."
+                ) from e
+            wait = min(e.retry_after or DEFAULT_RATE_LIMIT_WAIT_SECONDS, MAX_RATE_LIMIT_WAIT_SECONDS)
+            # Small buffer on top of the provider's own number — retrying
+            # at the exact edge of the window sometimes still gets rejected.
+            await asyncio.sleep(wait + 0.5)
 
     elements = [
         DialogueElement(
@@ -159,11 +183,13 @@ async def parse_scene(scene: Scene, detect_sound_effects: bool = False) -> Parse
 
 
 async def parse_script_scenes(
-    scenes: list[Scene], max_concurrent: int = 4, detect_sound_effects: bool = False,
+    scenes: list[Scene], max_concurrent: int = 2, detect_sound_effects: bool = False,
 ) -> tuple[list[ParsedScene], list[str]]:
-    """max_concurrent=4 default — cloud API providers (Groq) handle much
-    higher concurrency than a single local GPU could, so this is bumped up
-    from the local-Ollama default of 2."""
+    """max_concurrent=2 (lowered from 4) — Groq's free/on-demand tier has an
+    8000 tokens-per-minute cap, and higher concurrency was burning through
+    that budget fast on large scripts, triggering rate limits on most
+    scenes. Combined with the retry logic in parse_scene, this keeps large
+    scripts parsing reliably rather than dropping scenes that hit 429."""
     semaphore = asyncio.Semaphore(max_concurrent)
     warnings: list[str] = []
 
@@ -172,7 +198,14 @@ async def parse_script_scenes(
             try:
                 return await parse_scene(scene, detect_sound_effects=detect_sound_effects)
             except LLMError as e:
-                warnings.append(f"Scene {scene.index} ({scene.heading or 'untitled'}): {e}")
+                # Keep the warning short and human-readable — the raw
+                # provider error (which can be a large JSON blob) isn't
+                # useful to show a non-technical user in the UI.
+                reason = "rate limit" if isinstance(e, LLMRateLimitError) or "rate limit" in str(e).lower() else "parsing error"
+                warnings.append(
+                    f"Scene {scene.index} ({scene.heading or 'untitled'}) couldn't be "
+                    f"parsed ({reason}) and was skipped."
+                )
                 return None
 
     results = await asyncio.gather(*(parse_with_limit(s) for s in scenes))
